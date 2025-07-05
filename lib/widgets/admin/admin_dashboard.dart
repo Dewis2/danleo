@@ -1,7 +1,14 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_admin_scaffold/admin_scaffold.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import '../../services/AuthService.dart';
+
 import '../../services/ProductService.dart';
+import 'orders_report.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({Key? key}) : super(key: key);
@@ -17,6 +24,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
   final _urlImagenController = TextEditingController();
   List<String> _selectedCategories = [];
   String? _editingId;
+  File? _pickedImage;
+  final ImagePicker _picker = ImagePicker();
+
+  final AuthService _authService = AuthService();
 
   final ProductService _productService = ProductService();
 
@@ -42,15 +53,59 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _urlImagenController.clear();
     _selectedCategories = [];
     _editingId = null;
+    _pickedImage = null;
     setState(() {});
+  }
+
+  Future<void> _signOut() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cerrar Sesión'),
+        content: const Text('¿Estás seguro de que quieres cerrar sesión?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Cerrar Sesión'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        await _authService.signOut();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error al cerrar sesión: $e'),
+              backgroundColor: secondaryRed,
+            ),
+          );
+        }
+      }
+    }
   }
 
   void _guardarProducto() async {
     final nombre = _nombreController.text.trim();
     final precio = double.tryParse(_precioController.text) ?? 0.0;
     final descripcion = _descripcionController.text.trim();
-    final urlImagen = _urlImagenController.text.trim();
+    String urlImagen = _urlImagenController.text.trim();
     final categorias = List<String>.from(_selectedCategories);
+
+    if (_pickedImage != null) {
+      final uploaded = await _uploadImage(_pickedImage!);
+      if (uploaded != null) {
+        urlImagen = uploaded;
+        _urlImagenController.text = uploaded;
+      }
+    }
 
     // Validar usando ProductService
     final error = _productService.validateProduct(
@@ -74,15 +129,18 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
     try {
       if (_editingId == null) {
-        await _productService.createProduct(
+        final result = await _productService.createProduct(
           nombre,
           precio,
           descripcion,
           urlImagen,
           categorias,
         );
+        if (result.startsWith('Error')) {
+          throw result;
+        }
       } else {
-        await _productService.updateProduct(
+        final success = await _productService.updateProduct(
           _editingId!,
           nombre,
           precio,
@@ -90,6 +148,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
           urlImagen,
           categorias,
         );
+        if (!success) {
+          throw 'No se pudo actualizar el producto';
+        }
       }
 
       _clearFields();
@@ -115,7 +176,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  void _editarProducto(Map<String, dynamic> data, String id) {
+  void _editarProducto(BuildContext ctx, Map<String, dynamic> data, String id) {
     _nombreController.text = data['nombre'] ?? '';
     _precioController.text = data['precio'].toString();
     _descripcionController.text = data['descripcion'] ?? '';
@@ -123,6 +184,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _selectedCategories = (data['categoria'] as List?)?.map((e) => e.toString()).toList() ?? [];
     _editingId = id;
     setState(() {});
+    DefaultTabController.of(ctx)?.animateTo(0);
   }
 
   void _eliminarProducto(String id) async {
@@ -182,6 +244,26 @@ class _AdminDashboardState extends State<AdminDashboard> {
           ),
         );
       }
+    }
+  }
+
+  Future<void> _pickImage() async {
+    final picked = await _picker.pickImage(source: ImageSource.gallery);
+    if (picked != null) {
+      setState(() {
+        _pickedImage = File(picked.path);
+      });
+    }
+  }
+
+  Future<String?> _uploadImage(File image) async {
+    try {
+      final fileName = 'productos/${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final ref = FirebaseStorage.instance.ref().child(fileName);
+      await ref.putFile(image);
+      return await ref.getDownloadURL();
+    } catch (e) {
+      return null;
     }
   }
 
@@ -323,8 +405,18 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       onChanged: (value) => setState(() {}),
                     ),
 
+                    // Botón para seleccionar imagen desde dispositivo
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _pickImage,
+                        icon: const Icon(Icons.photo_library),
+                        label: const Text('Seleccionar imagen desde dispositivo'),
+                      ),
+                    ),
+
                     // Vista previa de imagen
-                    if (_urlImagenController.text.isNotEmpty)
+                    if (_pickedImage != null || _urlImagenController.text.isNotEmpty)
                       Container(
                         margin: const EdgeInsets.only(bottom: 16),
                         padding: const EdgeInsets.all(16),
@@ -345,28 +437,35 @@ class _AdminDashboardState extends State<AdminDashboard> {
                             const SizedBox(height: 8),
                             ClipRRect(
                               borderRadius: BorderRadius.circular(8),
-                              child: Image.network(
-                                _urlImagenController.text,
-                                height: isMobile ? 100 : 120,
-                                width: isMobile ? 100 : 120,
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) => Container(
-                                  height: isMobile ? 100 : 120,
-                                  width: isMobile ? 100 : 120,
-                                  decoration: BoxDecoration(
-                                    color: Colors.grey[300],
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(Icons.broken_image, size: 40, color: Colors.grey[600]),
-                                      const SizedBox(height: 4),
-                                      Text('URL no válida', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-                                    ],
-                                  ),
-                                ),
-                              ),
+                              child: _pickedImage != null
+                                  ? Image.file(
+                                      _pickedImage!,
+                                      height: isMobile ? 100 : 120,
+                                      width: isMobile ? 100 : 120,
+                                      fit: BoxFit.cover,
+                                    )
+                                  : Image.network(
+                                      _urlImagenController.text,
+                                      height: isMobile ? 100 : 120,
+                                      width: isMobile ? 100 : 120,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (context, error, stackTrace) => Container(
+                                        height: isMobile ? 100 : 120,
+                                        width: isMobile ? 100 : 120,
+                                        decoration: BoxDecoration(
+                                          color: Colors.grey[300],
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: Column(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Icon(Icons.broken_image, size: 40, color: Colors.grey[600]),
+                                            const SizedBox(height: 4),
+                                            Text('URL no válida', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
                             ),
                           ],
                         ),
@@ -718,7 +817,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                                 mainAxisAlignment: MainAxisAlignment.end,
                                 children: [
                                   TextButton.icon(
-                                    onPressed: () => _editarProducto(data, doc.id),
+                                    onPressed: () => _editarProducto(context, data, doc.id),
                                     icon: Icon(Icons.edit, size: 18, color: primaryOrange),
                                     label: Text('Editar', style: TextStyle(color: primaryOrange)),
                                   ),
@@ -824,7 +923,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                                   IconButton(
                                     icon: const Icon(Icons.edit, size: 20),
                                     color: primaryOrange,
-                                    onPressed: () => _editarProducto(data, doc.id),
+                                    onPressed: () => _editarProducto(context, data, doc.id),
                                     tooltip: 'Editar producto',
                                   ),
                                   IconButton(
@@ -879,12 +978,19 @@ class _AdminDashboardState extends State<AdminDashboard> {
               ),
             ],
           ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.logout),
+              tooltip: 'Cerrar sesión',
+              onPressed: _signOut,
+            ),
+          ],
           backgroundColor: primaryGreen,
           foregroundColor: Colors.white,
           elevation: 0,
         ),
         body: DefaultTabController(
-          length: 2,
+          length: 3,
           child: Column(
             children: [
               Container(
@@ -902,6 +1008,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       icon: Icon(Icons.inventory_2, size: 20),
                       text: 'Productos',
                     ),
+                    Tab(
+                      icon: Icon(Icons.receipt_long, size: 20),
+                      text: 'Pedidos',
+                    ),
                   ],
                 ),
               ),
@@ -918,6 +1028,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                         padding: const EdgeInsets.all(16.0),
                         child: _buildTablaProductos(),
                       ),
+                      const OrdersReport(),
                     ],
                   ),
                 ),
@@ -948,6 +1059,13 @@ class _AdminDashboardState extends State<AdminDashboard> {
               ),
             ],
           ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.logout),
+              tooltip: 'Cerrar sesión',
+              onPressed: _signOut,
+            ),
+          ],
           backgroundColor: primaryGreen,
           foregroundColor: Colors.white,
           elevation: 0,
@@ -977,40 +1095,42 @@ class _AdminDashboardState extends State<AdminDashboard> {
           selectedRoute: '/',
           onSelected: (item) {},
         ),
-        body: Container(
-          color: secondaryCream,
-          child: Padding(
-            padding: EdgeInsets.all(isTablet ? 16.0 : 24.0),
-            child: isTablet
-                ? Column(
+        body: DefaultTabController(
+          length: 3,
+          child: Column(
+            children: [
+              Container(
+                color: primaryGreen,
+                child: TabBar(
+                  indicatorColor: primaryOrange,
+                  labelColor: Colors.white,
+                  unselectedLabelColor: Colors.white.withOpacity(0.7),
+                  tabs: const [
+                    Tab(icon: Icon(Icons.add_box), text: 'Agregar'),
+                    Tab(icon: Icon(Icons.inventory_2), text: 'Productos'),
+                    Tab(icon: Icon(Icons.receipt_long), text: 'Pedidos'),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Container(
+                  color: secondaryCream,
+                  child: TabBarView(
                     children: [
-                      Expanded(
-                        flex: 1,
+                      Padding(
+                        padding: EdgeInsets.all(isTablet ? 16.0 : 24.0),
                         child: _buildFormulario(),
                       ),
-                      const SizedBox(height: 16),
-                      Expanded(
-                        flex: 1,
+                      Padding(
+                        padding: EdgeInsets.all(isTablet ? 16.0 : 24.0),
                         child: _buildTablaProductos(),
                       ),
-                    ],
-                  )
-                : Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Panel lateral izquierdo - Formulario
-                      Expanded(
-                        flex: 2,
-                        child: _buildFormulario(),
-                      ),
-                      const SizedBox(width: 24),
-                      // Panel derecho - Tabla de productos
-                      Expanded(
-                        flex: 3,
-                        child: _buildTablaProductos(),
-                      ),
+                      const OrdersReport(),
                     ],
                   ),
+                ),
+              ),
+            ],
           ),
         ),
       );
