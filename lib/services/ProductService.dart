@@ -5,8 +5,11 @@ class ProductService {
       .collection('productos');
 
   // Regex para validaciones
-  final RegExp _descriptionRegex = RegExp(r'^[a-zA-Z0-9 .,!?()-]+$');
-  final RegExp _nameRegex = RegExp(r'^[a-zA-Z0-9 ]+$');
+  // Se incluyen caracteres acentuados y la ñ para admitir español
+  final RegExp _descriptionRegex =
+      RegExp(r'^[a-zA-ZÁÉÍÓÚÜáéíóúüñÑ0-9 .,!?()¡¿-]+$');
+  final RegExp _nameRegex =
+      RegExp(r'^[a-zA-ZÁÉÍÓÚÜáéíóúüñÑ0-9 ]+$');
   final RegExp _urlRegex = RegExp(
     r'^https?:\/\/.*\.(jpeg|jpg|gif|png)(\?.*)?$',
     caseSensitive: false,
